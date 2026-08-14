@@ -58,8 +58,13 @@ which is exactly why the provider should never be hard-coded.
 
 ## Design decisions
 
+- **Startup validation**: on startup the app validates that `LLM_API_KEY`, `LLM_BASE_URL`, and
+  `LLM_MODEL` are set whenever the model is actually needed (i.e. not in kill-switch or stub mode).
+  A missing var causes the process to exit immediately with a clear error, rather than accepting
+  requests and returning `500`/`401` at runtime. Kill-switch (`LLM_ENABLED=false`) and stub mode
+  (`LLM_STUB=1`) skip this check since no real model call will be made.
 - **Retries**: the SDK's own retries are disabled (`max_retries=0`) and driven manually in
-  `app/llm/client.py`, because the assignment's retry rule (retry `429`/`5xx`/timeouts, never
+  `app/llm/client.py`, because the assignment's retry rule (retry `429`/`5xx`/`timeouts`, never
   `400`/`401`/`403`) is stricter than the SDK's blanket "retry twice" default. Backoff is
   `2^attempt + jitter`, up to 3 total attempts.
 - **Timeout**: client timeout is set to 30s, well under the SDK's 10-minute default. A timeout
@@ -187,7 +192,7 @@ Design:
 
 ```
 app/
-  main.py            FastAPI app, 400-on-bad-input handler, starts background workers
+  main.py            FastAPI app, config validation, 400-on-bad-input handler, starts background workers
   routes/
     extract.py         sync endpoint: kill switch, stub mode, real path
     jobs.py             async endpoint: POST /jobs/extract (202), GET /jobs/{id}

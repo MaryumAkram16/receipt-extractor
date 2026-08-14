@@ -1,4 +1,5 @@
 import logging
+import os
 
 from dotenv import load_dotenv
 
@@ -14,13 +15,40 @@ from .jobs.worker import start_workers
 
 logging.basicConfig(level=logging.INFO)
 
+logger = logging.getLogger("app")
+
+
+def _validate_config() -> None:
+    enabled = os.environ.get("LLM_ENABLED", "true").lower()
+    stub = os.environ.get("LLM_STUB", "0") == "1"
+
+    if enabled == "false" or stub:
+        return  # kill switch or stub mode: no real model call will be made
+
+    missing: list[str] = []
+    if not os.environ.get("LLM_API_KEY"):
+        missing.append("LLM_API_KEY")
+    if not os.environ.get("LLM_BASE_URL"):
+        missing.append("LLM_BASE_URL")
+    if not os.environ.get("LLM_MODEL"):
+        missing.append("LLM_MODEL")
+
+    if missing:
+        raise RuntimeError(
+            "Missing required environment variable(s): "
+            + ", ".join(missing)
+            + " — see .env.example"
+        )
+
+
 app = FastAPI(title="Receipt Extractor API")
 app.include_router(extract_router)
 app.include_router(jobs_router)
 
 
 @app.on_event("startup")
-def _start_background_workers():
+def _on_startup():
+    _validate_config()
     start_workers(count=2)
 
 

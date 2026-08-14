@@ -1,7 +1,7 @@
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..jobs.store import store
 from ..jobs.worker import enqueue
@@ -14,7 +14,14 @@ class JobRequest(BaseModel):
     # Client-supplied key so a retried POST (network blip, double-click,
     # at-least-once delivery from an upstream queue) doesn't enqueue the
     # same work twice. This is the idempotency half of "jobs will run twice".
-    idempotency_key: Optional[str] = None
+    idempotency_key: Optional[str] = Field(default=None, max_length=256)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def not_blank(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v.strip():
+            raise ValueError("idempotency_key must not be blank if provided")
+        return v
 
 
 class JobAccepted(BaseModel):
