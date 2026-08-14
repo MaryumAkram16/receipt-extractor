@@ -6,12 +6,43 @@ other external data: parse, validate, and if it fails, quarantine rather
 than trust it or crash.
 """
 import json
+import os
 import re
 
 from pydantic import ValidationError
 
 from .client import call_model, load_prompt, quarantine
 from .schema import ExtractResult
+
+STUB_RESULT = ExtractResult(
+    vendor="Stub Cafe",
+    date="2025-01-01",
+    total_amount=100.0,
+    currency="PKR",
+    confidence=0.9,
+    needs_review=False,
+)
+
+FALLBACK_RESULT = ExtractResult(
+    vendor=None,
+    date=None,
+    total_amount=None,
+    currency=None,
+    confidence=0.0,
+    needs_review=True,
+)
+
+
+def run_extraction(user_text: str) -> ExtractResult:
+    """The single entry point every caller (sync route, job worker) should
+    use — it's the one place stub mode and the kill switch are checked, so
+    neither path can accidentally make a real call when it shouldn't.
+    """
+    if os.environ.get("LLM_ENABLED", "true").lower() == "false":
+        return FALLBACK_RESULT
+    if os.environ.get("LLM_STUB") == "1":
+        return STUB_RESULT
+    return extract(user_text)
 
 
 def _strip_fence(text: str) -> str:

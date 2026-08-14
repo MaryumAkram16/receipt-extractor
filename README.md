@@ -134,15 +134,69 @@ concatenated into the system prompt, and Pydantic validation would have rejected
 response as invalid JSON regardless — so even a partial jailbreak would have been quarantined rather
 than returned to the caller.
 
+## Background jobs
+
+The `/extract` endpoint above is synchronous — it waits for the model and can take several
+seconds. `POST /jobs/extract` is the same work moved off the request: accept fast, work in the
+background, report status.
+
+**Enqueue** (returns instantly, before any model call runs):
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs/extract -H "Content-Type: application/json" \
+  -d '{"text": "Cafe Aroma\n12 Jun 2025\nTotal: PKR 1082"}'
+```
+
+```json
+{"job_id": "9090308f-5e1e-461f-942e-f193c990c9b5", "status": "pending"}
+```
+
+**Poll for the result:**
+
+```bash
+curl http://127.0.0.1:8000/jobs/9090308f-5e1e-461f-942e-f193c990c9b5
+```
+
+```json
+{"job_id": "9090308f-5e1e-461f-942e-f193c990c9b5", "status": "succeeded", "attempts": 1,
+ "result": {"vendor": "Cafe Aroma", "date": "2025-06-12", "total_amount": 1082.0,
+            "currency": "PKR", "confidence": 0.95, "needs_review": false}, "error": null}
+```
+
+Design:
+
+- **Architecture**: a `queue.Queue` plus two daemon worker threads, started on FastAPI startup.
+  No Redis, no Celery — the whole state is an in-memory dict behind a lock
+  (`app/jobs/store.py`). Good enough for one process; the moment this needs to survive a
+  restart or run across multiple processes, it's the first thing to swap for Redis.
+- **Idempotency**: `POST /jobs/extract` accepts an optional `idempotency_key`. Resending the
+  same key returns the *same* `job_id` instead of enqueueing a duplicate — verified live: two
+  identical requests with `idempotency_key: "order-123"` returned the same job both times.
+  This covers "jobs will run twice" from the client side; the extraction call itself has no
+  side effects, so re-running it is also naturally safe.
+- **Retries**: each job gets up to 3 attempts with exponential backoff (2s, 4s) between them,
+  independent of the lower-level retry policy already inside `call_model` for transient HTTP
+  errors. Verified live by temporarily breaking the API key: the job retried 3 times, then
+  settled on `status: "failed"` with the real 401 error captured.
+- **Alerting**: a job that exhausts its retries writes a line to `logs/alerts.jsonl` (job id,
+  attempts, final error, input preview) in addition to an ERROR-level log line — the durable
+  record a human, or a real alerting pipeline tailing that file, would use to notice the
+  failure. Confirmed live in the same broken-key test above.
+
 ## Repo layout
 
 ```
 app/
-  main.py            FastAPI app, 400-on-bad-input handler
-  routes/extract.py  the endpoint: kill switch, stub mode, real path
+  main.py            FastAPI app, 400-on-bad-input handler, starts background workers
+  routes/
+    extract.py         sync endpoint: kill switch, stub mode, real path
+    jobs.py             async endpoint: POST /jobs/extract (202), GET /jobs/{id}
+  jobs/
+    store.py            thread-safe in-memory job store, idempotency index
+    worker.py            queue + worker threads, retry policy, alerting on final failure
   llm/
     client.py         OpenAI-compatible client: timeout, retries, cost log
-    parse.py          parse -> validate -> repair once -> quarantine
+    parse.py          parse -> validate -> repair once -> quarantine; run_extraction() shared by both routes
     schema.py          request/response Pydantic models, enums
 prompts/
   extract-v1.md        the prompt, versioned

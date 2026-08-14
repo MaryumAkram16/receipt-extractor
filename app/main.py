@@ -9,11 +9,19 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from .routes.extract import router as extract_router
+from .routes.jobs import router as jobs_router
+from .jobs.worker import start_workers
 
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Receipt Extractor API")
 app.include_router(extract_router)
+app.include_router(jobs_router)
+
+
+@app.on_event("startup")
+def _start_background_workers():
+    start_workers(count=2)
 
 
 @app.exception_handler(RequestValidationError)
