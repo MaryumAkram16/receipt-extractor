@@ -60,4 +60,67 @@ which is exactly why the provider should never be hard-coded.
 
 - **Retries**: the SDK's own retries are disabled (`max_retries=0`) and driven manually in
   `app/llm/client.py`, because the assignment's retry rule (retry `429`/`5xx`/timeouts, never
-  `400`/`401`/`403`) is stricter than the SDK's
+  `400`/`401`/`403`) is stricter than the SDK's blanket "retry twice" default. Backoff is
+  `2^attempt + jitter`, up to 3 total attempts.
+- **Timeout**: client timeout is set to 30s, well under the SDK's 10-minute default. A timeout
+  surfaces to the caller as `504`.
+- **Kill switch**: `LLM_ENABLED=false` short-circuits before the model client is even imported, and
+  returns a deterministic all-null, `needs_review: true` fallback.
+- **Stub mode**: `LLM_STUB=1` returns a fixed schema-valid object with zero model calls — used for all
+  local development so `uvicorn --reload` restarts don't burn OpenRouter's 50/day free quota.
+- **Repair loop**: exactly one repair retry on a parse or schema failure, sending the model its own
+  broken output plus the exact validation error. A second failure quarantines to
+  `logs/quarantine.jsonl` and returns `422` — the raw model text is never handed to the caller, on
+  either the success or the failure path.
+
+## Eval
+
+`evals/cases.json` has 8 hand-labelled cases, including one non-receipt input and two cases that
+should hit the "when unsure → needs_review" rule. Run:
+
+```bash
+uvicorn app.main:app &
+python -m evals.run_eval
+```
+
+**Score: 7/8 — 2026-08-15 — prompt extract-v1**
+
+One case failed: `ambiguous_currency` (a receipt with a plain number total and no currency symbol or
+code). The model returned `needs_review: false` when it should have flagged the missing currency for
+review instead of silently guessing one. Every other case — including the deliberately non-receipt
+input and the missing-total case — passed. Worth a v2 prompt tweak: an explicit example covering a
+receipt with no currency indicator at all.
+
+## Cost
+
+Each call logs one structured JSON line (prompt version, model, input/output tokens, duration,
+whether it needed a repair) via Python's `logging` module to stdout — see `_log_cost` in
+`app/llm/client.py`. `openrouter/free` costs nothing per call, so token counts matter for the free
+daily cap (50 requests/day) rather than for a dollar figure. For a paid model, this same log line is
+what a cost-per-1,000-requests estimate would be built from — see the [LLM price
+calculator](https://llmpricecheck.com) for the arithmetic.
+
+## What I'd fix with another day
+
+Give the prompt a real few-shot example for multi-currency ambiguity (a receipt with both a `$` symbol
+and a country context that contradicts it) — the current three examples don't cover that case, and it's
+the one most likely to produce a confident-but-wrong currency guess.
+
+## Repo layout
+
+```
+app/
+  main.py            FastAPI app, 400-on-bad-input handler
+  routes/extract.py  the endpoint: kill switch, stub mode, real path
+  llm/
+    client.py         OpenAI-compatible client: timeout, retries, cost log
+    parse.py          parse -> validate -> repair once -> quarantine
+    schema.py          request/response Pydantic models, enums
+prompts/
+  extract-v1.md        the prompt, versioned
+evals/
+  cases.json            8 labelled cases
+  run_eval.py           scores a running instance against cases.json
+JOB-CARD.md
+.env.example
+```
