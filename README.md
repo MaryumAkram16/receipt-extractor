@@ -96,10 +96,18 @@ was a gap in the few-shot examples, not a deeper prompt problem.
 
 Each call logs one structured JSON line (prompt version, model, input/output tokens, duration,
 whether it needed a repair) via Python's `logging` module to stdout — see `_log_cost` in
-`app/llm/client.py`. `openrouter/free` costs nothing per call, so token counts matter for the free
-daily cap (50 requests/day) rather than for a dollar figure. For a paid model, this same log line is
-what a cost-per-1,000-requests estimate would be built from — see the [LLM price
-calculator](https://llmpricecheck.com) for the arithmetic.
+`app/llm/client.py`. Real line from a live call:
+
+```json
+{"prompt_version": "extract-v2", "model": "openrouter/free", "input_tokens": 744, "output_tokens": 46, "duration_ms": 17326, "repaired": false}
+```
+
+`openrouter/free` costs nothing per call, so this project's actual bill is $0 — token counts matter for
+the free daily cap (50 requests/day) rather than for a dollar figure. To make the log line mean
+something in dollars, pricing it as if it ran on GPT-4o mini ($0.15/1M input tokens, $0.60/1M output
+tokens, Aug 2026 rates): this one call cost about **$0.00014**. At 10,000 requests/day with similar
+token counts, that's roughly **$1.39/day** — and input tokens (mostly the prompt + few-shot examples,
+resent on every call) are the larger share of that, not output.
 
 ## What I'd fix with another day
 
