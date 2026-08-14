@@ -1,0 +1,42 @@
+[
+  {
+    "name": "clean_pkr_receipt",
+    "input": "Cafe Aroma\n12 Jun 2025\n2x Latte  680\n1x Croissant  350\nSubtotal: 1030\nTax: 52\nTotal: PKR 1082",
+    "expected": {"vendor": "Cafe Aroma", "date": "2025-06-12", "total_amount": 1082, "currency": "PKR", "needs_review": false}
+  },
+  {
+    "name": "clean_usd_receipt",
+    "input": "GREENLEAF GROCERY\nDate: 03/22/2024\nBananas  2.40\nMilk  3.10\nTOTAL: $5.50",
+    "expected": {"vendor": "GREENLEAF GROCERY", "date": "2024-03-22", "total_amount": 5.50, "currency": "USD", "needs_review": false}
+  },
+  {
+    "name": "no_vendor_name",
+    "input": "THANK YOU FOR SHOPPING\nItem A   $12.50\nItem B   $7.00\nTOTAL DUE  $19.50",
+    "expected": {"vendor": null, "total_amount": 19.50, "currency": "USD", "needs_review": true}
+  },
+  {
+    "name": "missing_total",
+    "input": "Book Nook\n5 Jan 2025\nNovel - The Long Road   1450\nBookmark   150",
+    "expected": {"vendor": "Book Nook", "date": "2025-01-05", "total_amount": null, "needs_review": true}
+  },
+  {
+    "name": "eur_invoice",
+    "input": "Invoice #4471\nBella Trattoria\n14-08-2025\nPasta Carbonara 14.00 EUR\nTiramisu 6.50 EUR\nTotal Due: 20.50 EUR",
+    "expected": {"vendor": "Bella Trattoria", "date": "2025-08-14", "total_amount": 20.50, "currency": "EUR", "needs_review": false}
+  },
+  {
+    "name": "not_a_receipt",
+    "input": "hey are we still on for lunch tomorrow?",
+    "expected": {"vendor": null, "date": null, "total_amount": null, "currency": null, "needs_review": true}
+  },
+  {
+    "name": "ambiguous_currency",
+    "input": "Mountain View Store\n2 Feb 2025\nHiking socks  450\nWater bottle  350\nTotal: 800",
+    "expected": {"currency": null, "needs_review": true}
+  },
+  {
+    "name": "gbp_receipt_no_date",
+    "input": "The Corner Pub\nFish & Chips  8.50\nPint of Ale  4.20\nTotal: GBP 12.70",
+    "expected": {"vendor": "The Corner Pub", "date": null, "total_amount": 12.70, "currency": "GBP", "needs_review": true}
+  }
+]
