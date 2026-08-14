@@ -16,8 +16,8 @@ from openai import APIStatusError, APITimeoutError, OpenAI
 
 logger = logging.getLogger("llm.cost")
 
-PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "extract-v1.md"
-PROMPT_VERSION = "extract-v1"
+PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "extract-v2.md"
+PROMPT_VERSION = "extract-v2"
 QUARANTINE_PATH = Path(__file__).resolve().parent.parent.parent / "logs" / "quarantine.jsonl"
 
 # We disable the SDK's own silent retries and drive retries ourselves, so the

@@ -83,13 +83,14 @@ uvicorn app.main:app &
 python -m evals.run_eval
 ```
 
-**Score: 7/8 — 2026-08-15 — prompt extract-v1**
+**Score: 8/8 — 2026-08-15 — prompt extract-v2**
 
-One case failed: `ambiguous_currency` (a receipt with a plain number total and no currency symbol or
-code). The model returned `needs_review: false` when it should have flagged the missing currency for
-review instead of silently guessing one. Every other case — including the deliberately non-receipt
-input and the missing-total case — passed. Worth a v2 prompt tweak: an explicit example covering a
-receipt with no currency indicator at all.
+v1 scored 7/8, failing `ambiguous_currency`: a receipt with a plain number total and no currency
+symbol or code, where the model returned `needs_review: false` instead of flagging the missing
+currency. v2 adds one more few-shot example covering exactly that shape (a total with no currency
+indicator anywhere in the text, expecting `currency: null, needs_review: true`). Rerunning the full
+eval against v2 with no other changes: 8/8. One additional example was enough to fix it — the failure
+was a gap in the few-shot examples, not a deeper prompt problem.
 
 ## Cost
 
@@ -102,9 +103,9 @@ calculator](https://llmpricecheck.com) for the arithmetic.
 
 ## What I'd fix with another day
 
-Give the prompt a real few-shot example for multi-currency ambiguity (a receipt with both a `$` symbol
-and a country context that contradicts it) — the current three examples don't cover that case, and it's
-the one most likely to produce a confident-but-wrong currency guess.
+v2 closed the `ambiguous_currency` gap, but it's only one example — a receipt with both a `$` symbol
+and a country context that contradicts it (e.g. a USD sign on a clearly Pakistani receipt) still isn't
+covered, and is the next likely failure mode for currency inference.
 
 ## Repo layout
 
@@ -118,6 +119,7 @@ app/
     schema.py          request/response Pydantic models, enums
 prompts/
   extract-v1.md        the prompt, versioned
+  extract-v2.md         v2: adds a no-currency-indicator example, fixes the ambiguous_currency case
 evals/
   cases.json            8 labelled cases
   run_eval.py           scores a running instance against cases.json
