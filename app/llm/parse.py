@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from .client import call_model, load_prompt, quarantine
 from .schema import ExtractResult
+from .. import db
 
 STUB_RESULT = ExtractResult(
     vendor="Stub Cafe",
@@ -42,7 +43,20 @@ def run_extraction(user_text: str) -> ExtractResult:
         return FALLBACK_RESULT
     if os.environ.get("LLM_STUB") == "1":
         return STUB_RESULT
-    return extract(user_text)
+
+    result = extract(user_text)
+    # Only real model extractions get persisted — stub and kill-switch
+    # results are fake by construction and would pollute the report's numbers.
+    db.insert_extraction(
+        vendor=result.vendor,
+        date=result.date,
+        total_amount=result.total_amount,
+        currency=result.currency.value if result.currency else None,
+        confidence=result.confidence,
+        needs_review=result.needs_review,
+        source="api",
+    )
+    return result
 
 
 def _strip_fence(text: str) -> str:

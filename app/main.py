@@ -10,18 +10,24 @@ from fastapi.responses import JSONResponse
 
 from .routes.extract import router as extract_router
 from .routes.jobs import router as jobs_router
+from .routes.reports import router as reports_router
 from .jobs.worker import start_workers
+from .db import init_db
+from .scheduler import start_scheduler
 
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Receipt Extractor API")
 app.include_router(extract_router)
 app.include_router(jobs_router)
+app.include_router(reports_router)
 
 
 @app.on_event("startup")
-def _start_background_workers():
+def _startup():
+    init_db()
     start_workers(count=2)
+    start_scheduler()
 
 
 @app.exception_handler(RequestValidationError)

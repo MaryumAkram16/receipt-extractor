@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .venv/
 logs/quarantine.jsonl
+logs/alerts.jsonl
+data/extractions.db
+reports/*.pdf

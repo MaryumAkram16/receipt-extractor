@@ -183,20 +183,96 @@ Design:
   record a human, or a real alerting pipeline tailing that file, would use to notice the
   failure. Confirmed live in the same broken-key test above.
 
+## PDF reports
+
+Every real extraction (not stub, not kill-switch fallback) gets persisted to a local SQLite
+database (`data/extractions.db`, via `app/db.py`). `POST /jobs/report` queries that data,
+aggregates it, and renders a PDF spending summary — as a background job, reusing the exact same
+queue/worker/retry/alerting machinery as `/jobs/extract`.
+
+**Trigger a report** (optionally scoped to a date range with `start_date`/`end_date`, both ISO
+timestamps, both optional):
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs/report -H "Content-Type: application/json" -d '{}'
+```
+
+```json
+{"job_id": "71ff2b9d-c035-4439-a420-b73dbde3d47d", "status": "pending"}
+```
+
+**Poll it** the same way as an extract job — `GET /jobs/{job_id}`. On success, the result
+contains a link to the file, not the file itself — real output from a live run against two
+real extractions:
+
+```json
+{"status": "succeeded", "kind": "report", "result": {
+  "report_url": "/reports/spending-report-db9ffe4832.pdf",
+  "summary": {"total_records": 2, "needs_review_count": 0, "needs_review_rate": 0.0,
+    "by_currency": [{"currency": "PKR", "total": 1082.0, "n": 1}, {"currency": "USD", "total": 25.5, "n": 1}],
+    "top_vendors": [{"vendor": "Cafe Aroma", "total": 1082.0, "n": 1}, {"vendor": "Greenleaf Grocery", "total": 25.5, "n": 1}]}}}
+```
+
+**Download it** — verified by actually downloading and opening the PDF, not just checking the
+file exists:
+
+```bash
+curl -O http://127.0.0.1:8000/reports/spending-report-db9ffe4832.pdf
+```
+
+Design:
+
+- **Store and link, don't pass bytes around**: the job's `result` field carries a `report_url`,
+  never the PDF bytes. A job status endpoint returning a growing base64 blob doesn't scale past
+  a handful of pages; a link that a separate, purpose-built route serves does.
+- **The report computes nothing itself**: every number in the PDF comes from one aggregation
+  query (`db.query_summary`) — total records, spend by currency, top 10 vendors by spend,
+  needs-review rate. The rendering layer (`app/reports/generator.py`) only formats what the
+  query already computed; if a number in the PDF is wrong, the query is where to look, not the
+  PDF layout code.
+- **Filename safety**: `GET /reports/{filename}` only accepts filenames matching
+  `spending-report-<hex>.pdf` — the exact shape the generator produces — before it ever touches
+  the filesystem. Verified live: a path-traversal attempt against `/reports/` resolved to a
+  clean 404 with no file access, not a 500 or a leak.
+- **Reused job pattern, not a new one**: `Job` gained a `kind` field (`"extract"` | `"report"`)
+  and a generic `input_data` dict instead of an extract-specific `input_text` — the worker
+  dispatches by kind, but retries, idempotency, and alerting are the same code path for both job
+  types. Verified live: existing `/jobs/extract` and the sync `/extract` endpoint both still work
+  unchanged after the refactor.
+
+### Stretch: scheduled generation
+
+Set `REPORT_SCHEDULE_ENABLED=true` in `.env` (plus optionally
+`REPORT_SCHEDULE_INTERVAL_SECONDS`, default 86400 = daily) and a report is generated
+automatically on that interval, through the exact same `POST /jobs/report` code path a manual
+trigger would use (`app/scheduler.py`). Verified live with a 20-second interval for testing: the
+scheduler logged `scheduler_started` on boot, then fired three separate automatic report jobs at
+~20s intervals with no manual trigger, each one succeeding independently.
+
+This is intentionally minimal — a sleeping daemon thread, no persistence across restarts, no
+catch-up for a missed run — which is the right amount of machinery for a single-process dev app.
+The first upgrade if this needed to survive restarts or run across multiple instances:
+APScheduler with a persistent job store, or an external cron hitting `POST /jobs/report`.
+
 ## Repo layout
 
 ```
 app/
-  main.py            FastAPI app, 400-on-bad-input handler, starts background workers
+  main.py            FastAPI app, 400-on-bad-input handler, starts workers/scheduler/DB
+  db.py               SQLite persistence + the aggregation query the report is built from
+  scheduler.py         stretch: optional scheduled report generation
   routes/
     extract.py         sync endpoint: kill switch, stub mode, real path
-    jobs.py             async endpoint: POST /jobs/extract (202), GET /jobs/{id}
+    jobs.py             async endpoints: POST /jobs/extract, POST /jobs/report (both 202), GET /jobs/{id}
+    reports.py           GET /reports/{filename} — serves a generated PDF
   jobs/
-    store.py            thread-safe in-memory job store, idempotency index
-    worker.py            queue + worker threads, retry policy, alerting on final failure
+    store.py            thread-safe in-memory job store, generic over job "kind"
+    worker.py            queue + worker threads, dispatch by kind, retry policy, alerting
+  reports/
+    generator.py          queries the DB, renders the PDF, returns {report_url, summary}
   llm/
     client.py         OpenAI-compatible client: timeout, retries, cost log
-    parse.py          parse -> validate -> repair once -> quarantine; run_extraction() shared by both routes
+    parse.py          parse -> validate -> repair once -> quarantine; persists real results to db.py
     schema.py          request/response Pydantic models, enums
 prompts/
   extract-v1.md        the prompt, versioned
@@ -204,6 +280,8 @@ prompts/
 evals/
   cases.json            8 labelled cases
   run_eval.py           scores a running instance against cases.json
+data/                  SQLite database lives here (gitignored)
+reports/               generated PDFs live here (gitignored)
 JOB-CARD.md
 .env.example
 ```

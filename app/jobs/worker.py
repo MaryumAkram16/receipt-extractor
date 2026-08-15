@@ -1,9 +1,11 @@
 """The worker side of the queue/worker pattern.
 
 A fixed pool of daemon threads pulls job IDs off a queue.Queue and runs the
-slow AI call outside the request/response cycle. Two non-negotiables live
+slow work outside the request/response cycle. Two non-negotiables live
 here: a job can be retried a bounded number of times, and a job that never
-succeeds gets logged somewhere a human will actually see it.
+succeeds gets logged somewhere a human will actually see it. The same
+machinery drives both job kinds ("extract" and "report") — only the task
+function each one calls differs.
 """
 import json
 import logging
@@ -12,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 
-from .store import store
+from .store import store, Job
 
 logger = logging.getLogger("jobs.worker")
 alert_logger = logging.getLogger("jobs.alerts")
@@ -29,7 +31,7 @@ def enqueue(job_id: str) -> None:
     _work_queue.put(job_id)
 
 
-def _raise_alert(job_id: str, attempts: int, error: str, input_preview: str) -> None:
+def _raise_alert(job_id: str, attempts: int, error: str, preview: str) -> None:
     # A log line scrolls off a terminal. This file is the thing an on-call
     # human — or a real alerting pipeline tailing it — would actually see.
     alert_logger.error(
@@ -43,7 +45,7 @@ def _raise_alert(job_id: str, attempts: int, error: str, input_preview: str) -> 
                     "job_id": job_id,
                     "attempts": attempts,
                     "final_error": error,
-                    "input_preview": input_preview,
+                    "input_preview": preview,
                     "at": time.time(),
                 }
             )
@@ -51,9 +53,33 @@ def _raise_alert(job_id: str, attempts: int, error: str, input_preview: str) -> 
         )
 
 
-def _process(job_id: str) -> None:
-    from ..llm.parse import run_extraction  # deferred: keeps worker import-safe under stub/kill-switch
+def _run_task(job: Job) -> dict:
+    """Dispatches to the right task function for this job's kind. Each task
+    function takes the job's input_data and returns a JSON-serializable dict
+    — that's the only contract the worker cares about.
+    """
+    if job.kind == "extract":
+        from ..llm.parse import run_extraction  # deferred: keeps worker import-safe under stub/kill-switch
+        result = run_extraction(job.input_data["text"])
+        return result.model_dump()
 
+    if job.kind == "report":
+        from ..reports.generator import generate_report
+        return generate_report(
+            start_date=job.input_data.get("start_date"),
+            end_date=job.input_data.get("end_date"),
+        )
+
+    raise ValueError(f"unknown job kind: {job.kind}")
+
+
+def _preview(job: Job) -> str:
+    if job.kind == "extract":
+        return job.input_data.get("text", "")[:80].replace('"', "'")
+    return f"report {job.input_data.get('start_date', 'all')}..{job.input_data.get('end_date', 'all')}"
+
+
+def _process(job_id: str) -> None:
     job = store.get(job_id)
     if job is None:
         return
@@ -61,15 +87,17 @@ def _process(job_id: str) -> None:
     for attempt in range(1, MAX_JOB_ATTEMPTS + 1):
         store.update(job_id, status="running", attempts=attempt)
         try:
-            result = run_extraction(job.input_text)
-            store.update(job_id, status="succeeded", result=result.model_dump(), error=None)
+            result = _run_task(job)
+            store.update(job_id, status="succeeded", result=result, error=None)
             logger.info(
-                '{"job_id": "%s", "attempts": %d, "status": "succeeded"}', job_id, attempt
+                '{"job_id": "%s", "kind": "%s", "attempts": %d, "status": "succeeded"}',
+                job_id, job.kind, attempt,
             )
             return
         except Exception as exc:  # noqa: BLE001 — a job must never crash the worker thread
             logger.warning(
-                '{"job_id": "%s", "attempt": %d, "error": "%s"}', job_id, attempt, exc
+                '{"job_id": "%s", "kind": "%s", "attempt": %d, "error": "%s"}',
+                job_id, job.kind, attempt, exc,
             )
             if attempt < MAX_JOB_ATTEMPTS:
                 time.sleep(2 ** attempt)  # backoff between job-level retries
@@ -77,7 +105,7 @@ def _process(job_id: str) -> None:
 
             # Retries exhausted: quarantine the job, and make sure a human finds out.
             store.update(job_id, status="failed", error=str(exc))
-            _raise_alert(job_id, attempt, str(exc), job.input_text[:80].replace('"', "'"))
+            _raise_alert(job_id, attempt, str(exc), _preview(job))
 
 
 def _worker_loop() -> None:

@@ -3,19 +3,24 @@
 No external infra — just a dict behind a lock. Good enough for one process;
 the moment this needs to survive a restart or run across multiple processes,
 it's the first thing to swap for Redis.
+
+Generic over job "kind" — the same store, queue, retry policy, and alerting
+serve both /jobs/extract and /jobs/report, rather than duplicating the
+pattern per job type.
 """
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
 class Job:
     id: str
+    kind: str  # "extract" | "report"
     status: str  # "pending" | "running" | "succeeded" | "failed"
-    input_text: str
+    input_data: dict[str, Any]
     idempotency_key: Optional[str] = None
     result: Optional[dict] = None
     error: Optional[str] = None
@@ -30,14 +35,14 @@ class JobStore:
         self._idempotency_index: dict[str, str] = {}  # idempotency_key -> job_id
         self._lock = threading.Lock()
 
-    def create(self, input_text: str, idempotency_key: Optional[str]) -> Job:
+    def create(self, kind: str, input_data: dict[str, Any], idempotency_key: Optional[str]) -> Job:
         with self._lock:
             if idempotency_key:
                 existing_id = self._idempotency_index.get(idempotency_key)
                 if existing_id:
                     return self._jobs[existing_id]
 
-            job = Job(id=str(uuid.uuid4()), status="pending", input_text=input_text,
+            job = Job(id=str(uuid.uuid4()), kind=kind, status="pending", input_data=input_data,
                        idempotency_key=idempotency_key)
             self._jobs[job.id] = job
             if idempotency_key:
