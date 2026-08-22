@@ -19,5 +19,18 @@ jobs:
       - run: python -m compileall -q app evals
       - run: docker build -t receipt-extractor:ci .
       - name: Start API
+        env:
+          LLM_STUB: '1'
         run: uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/receipt-api.log 2>&1 &
-      - run: python -m evals.run_eval --base-url http://127.0.0.1:8000
+      - name: Wait for API
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/docs >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/receipt-api.log
+          exit 1
+      - name: Run evaluation harness
+        env:
+          LLM_STUB: '1'
+        run: python -m evals.run_eval --base-url http://127.0.0.1:8000
