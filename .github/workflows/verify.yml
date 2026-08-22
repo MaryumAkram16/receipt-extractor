@@ -9,6 +9,10 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    env:
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+      LLM_MODEL: ${{ secrets.LLM_MODEL }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,9 +43,5 @@ jobs:
             -d '{"text":"Cafe Aroma\\nTotal: PKR 1082"}')
           python -c 'import json,sys; d=json.loads(sys.argv[1]); assert set(["vendor","date","total_amount","currency","confidence","needs_review"]).issubset(d); print(json.dumps(d, indent=2))' "$response"
       - name: Run labelled evaluation when provider credentials are available
-        if: ${{ secrets.LLM_API_KEY != '' }}
-        env:
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
-          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+        if: ${{ env.LLM_API_KEY != '' }}
         run: python -m evals.run_eval --base-url http://127.0.0.1:8000
