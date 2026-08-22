@@ -16,7 +16,7 @@ import httpx
 CASES_PATH = Path(__file__).parent / "cases.json"
 
 
-def run(base_url: str) -> None:
+def run(base_url: str) -> int:
     cases = json.loads(CASES_PATH.read_text())
     passed = 0
     failures = []
@@ -40,13 +40,13 @@ def run(base_url: str) -> None:
                 passed += 1
 
     total = len(cases)
-    print(f"\n{passed}/{total} cases passed\n")
-    for name, reason in failures:
-        print(f"  FAIL {name}: {reason}")
+    summary = {"passed": passed, "total": total, "failed": len(failures), "failures": [{"name": name, "reason": reason} for name, reason in failures]}
+    print(json.dumps(summary, indent=2))
+    return 0 if not failures else 1
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     args = parser.parse_args()
-    run(args.base_url)
+    raise SystemExit(run(args.base_url))

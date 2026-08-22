@@ -285,3 +285,14 @@ reports/               generated PDFs live here (gitignored)
 JOB-CARD.md
 .env.example
 ```
+
+
+## Repeatable evaluation and CI
+
+The repository includes eight hand-labelled cases covering clean receipts, missing fields, ambiguous currency, multiple currencies, non-receipt input, and incomplete text. Run the evaluation against a local API instance:
+
+```bash
+python -m evals.run_eval --base-url http://127.0.0.1:8000
+```
+
+The command prints JSON with `passed`, `total`, and per-case failure details, and exits non-zero if any expected field fails. Python syntax checks, the container build, API startup, and this evaluation contract run through [`.github/workflows/verify.yml`](.github/workflows/verify.yml).
