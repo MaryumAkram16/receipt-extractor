@@ -8,7 +8,7 @@ processes or millions of rows, it's the first thing to swap for Postgres.
 """
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -27,6 +27,39 @@ CREATE TABLE IF NOT EXISTS extractions (
     source TEXT NOT NULL
 );
 """
+
+
+def _utc_iso(dt: datetime) -> str:
+    # One fixed shape (UTC, microseconds, +00:00) for every stored timestamp
+    # and every query bound, so plain string comparison in SQL orders correctly.
+    return dt.astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
+def normalize_bound(value: Optional[str], end: bool) -> Optional[str]:
+    """Validate a report date filter and convert it to the stored timestamp shape.
+
+    Accepts an ISO date ("2025-06-12") or datetime ("2025-06-12T10:00:00",
+    optionally with an offset). Naive datetimes are treated as UTC. A bare
+    date used as an *end* bound covers that whole day — previously
+    "end_date=2025-06-12" silently excluded every row from the 12th, because
+    "2025-06-12T09:00..." sorts after "2025-06-12".
+
+    Raises ValueError on anything else, which the API turns into a 400.
+    """
+    if value is None or value == "":
+        return None
+    raw = value.strip()
+    try:
+        if len(raw) == 10:
+            d = date.fromisoformat(raw)
+            dt = datetime.combine(d, time.max if end else time.min, tzinfo=timezone.utc)
+        else:
+            dt = datetime.fromisoformat(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise ValueError("must be an ISO 8601 date (YYYY-MM-DD) or datetime") from None
+    return _utc_iso(dt)
 
 
 @contextmanager
@@ -61,7 +94,7 @@ def insert_extraction(
                (created_at, vendor, date, total_amount, currency, confidence, needs_review, source)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                datetime.now(timezone.utc).isoformat(),
+                _utc_iso(datetime.now(timezone.utc)),
                 vendor,
                 date,
                 total_amount,
