@@ -29,7 +29,10 @@ def generate_report(start_date: str | None = None, end_date: str | None = None) 
     summary = db.query_summary(start_date, end_date)
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    filename = f"spending-report-{uuid.uuid4().hex[:10]}.pdf"
+    # Full 128-bit random name: reports are served without authentication,
+    # so the URL itself must be unguessable (the old 10-hex-char names were
+    # only 40 bits).
+    filename = f"spending-report-{uuid.uuid4().hex}.pdf"
     filepath = REPORTS_DIR / filename
 
     _render_pdf(filepath, summary)
