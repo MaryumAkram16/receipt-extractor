@@ -1,7 +1,9 @@
-fastapi
-uvicorn
-pydantic
-openai
-python-dotenv
-httpx
-reportlab
+# Runtime dependencies, pinned for reproducible builds.
+# Verified with Python 3.11 (Docker/CI) and 3.13.
+fastapi==0.165.0
+uvicorn==0.54.0
+pydantic==2.14.4
+openai==3.55.1
+python-dotenv==1.2.4
+httpx==0.28.1
+reportlab==5.1.0
