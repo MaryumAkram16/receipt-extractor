@@ -14,6 +14,8 @@ from typing import Iterator, Optional
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "extractions.db"
 
+TOP_VENDORS_PER_CURRENCY = 10
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS extractions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,15 +142,28 @@ def query_summary(start_date: Optional[str] = None, end_date: Optional[str] = No
             params,
         ).fetchall()
 
+        # Vendor spend is grouped by (vendor, currency): summing PKR and USD
+        # receipts from the same vendor into one number is meaningless. The
+        # top-N ranking is also done *within* each currency, because comparing
+        # raw amounts across currencies (PKR 10,000 vs USD 25) would let one
+        # currency crowd every other out of the list.
         by_vendor = conn.execute(
-            f"""SELECT COALESCE(vendor, 'unknown') AS vendor,
-                       SUM(total_amount) AS total,
-                       COUNT(*) AS n
-                FROM extractions {where_clause}
-                GROUP BY vendor
-                ORDER BY total DESC
-                LIMIT 10""",
-            params,
+            f"""SELECT vendor, currency, total, n FROM (
+                    SELECT COALESCE(vendor, 'unknown') AS vendor,
+                           COALESCE(currency, 'unknown') AS currency,
+                           SUM(total_amount) AS total,
+                           COUNT(*) AS n,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY COALESCE(currency, 'unknown')
+                               ORDER BY SUM(total_amount) DESC, COUNT(*) DESC,
+                                        COALESCE(vendor, 'unknown')
+                           ) AS rank_in_currency
+                    FROM extractions {where_clause}
+                    GROUP BY COALESCE(vendor, 'unknown'), COALESCE(currency, 'unknown')
+                )
+                WHERE rank_in_currency <= ?
+                ORDER BY currency, total DESC, vendor""",
+            [*params, TOP_VENDORS_PER_CURRENCY],
         ).fetchall()
 
     total_n = total_row["n"] or 0

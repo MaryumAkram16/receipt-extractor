@@ -30,7 +30,7 @@ are stored in SQLite and can be summarised into PDF spending reports, on demand 
   API keys and provider error bodies are never logged. Public errors are fixed, sanitized messages.
 - **Reporting pipeline.** SQLite persistence, one aggregation query, ReportLab PDFs, safe file
   downloads and optional scheduled generation.
-- **Tested and CI-verified.** 174 pytest tests use a fake LLM client (no network). CI is split
+- **Tested and CI-verified.** 181 pytest tests use a fake LLM client (no network). CI is split
   into deterministic jobs and a separate, opt-in live evaluation.
 
 ## Architecture
@@ -206,7 +206,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-All 174 tests run offline in about a second. A fake OpenAI-compatible client stands in for the
+All 181 tests run offline in about a second. A fake OpenAI-compatible client stands in for the
 provider, and an autouse guard fails any test that tries to make a real model call. Each test
 gets its own temporary SQLite database, reports directory and logs directory. Background jobs
 are processed synchronously, and retry waits are recorded instead of slept, so nothing depends
@@ -218,7 +218,7 @@ on timing.
 | `tests/test_extraction.py` | 29 | valid & invalid JSON, missing fields, schema failures, repair retry, quarantine contents, kill switch, stub mode, persistence |
 | `tests/test_llm_failures.py` | 45 | timeout, 429, 500/502/503/504, 400/401/403, retry exhaustion, backoff bounds, error → HTTP mapping, missing config, no secrets in logs |
 | `tests/test_jobs.py` | 30 | job lifecycle and status transitions, idempotency (same/different payload, per-kind scope, concurrency), duplicate enqueue, worker retry policy, nested-retry budget, alerts |
-| `tests/test_reports.py` | 32 | SQLite persistence, aggregation, currency grouping, date filters, PDF generation, downloads, path traversal and symlink protection |
+| `tests/test_reports.py` | 39 | SQLite persistence, aggregation, currency grouping (including vendors with receipts in several currencies), date filters, PDF generation, downloads, path traversal and symlink protection |
 | `tests/test_eval_runner.py` | 5 | evaluator refuses to score stub/disabled servers; contract mode |
 
 ## CI/CD
@@ -522,6 +522,9 @@ real extractions (report filenames are now 32 hex characters; this run predates 
     "top_vendors": [{"vendor": "Cafe Aroma", "total": 1082.0, "n": 1}, {"vendor": "Greenleaf Grocery", "total": 25.5, "n": 1}]}}}
 ```
 
+Each `top_vendors` entry now also carries a `currency` field (for example
+`{"vendor": "Cafe Aroma", "currency": "PKR", "total": 1082.0, "n": 1}`); the run above predates it.
+
 **Download it** — verified by actually downloading and opening the PDF, not just checking the
 file exists:
 
@@ -535,10 +538,12 @@ Design:
   never the PDF bytes. A job status endpoint returning a growing base64 blob doesn't scale past
   a handful of pages; a link that a separate, purpose-built route serves does.
 - **The report computes nothing itself**: every number in the PDF comes from one aggregation
-  query (`db.query_summary`) — total records, spend by currency, top 10 vendors by spend,
+  query (`db.query_summary`) — total records, spend by currency, top 10 vendors by spend per currency,
   needs-review rate. The rendering layer (`app/reports/generator.py`) only formats what the
   query already computed; if a number in the PDF is wrong, the query is where to look, not the
-  PDF layout code. Amounts are always grouped per currency, never summed across currencies.
+  PDF layout code. Amounts are always grouped per currency, never summed across currencies — that
+  includes vendor totals, which are grouped by vendor *and* currency, so a vendor with PKR and USD
+  receipts gets one row per currency. Vendors are ranked within each currency, never across them.
 - **Filename safety**: `GET /reports/{filename}` only accepts filenames matching
   `spending-report-<hex>.pdf` — the exact shape the generator produces — before it ever touches
   the filesystem, and refuses anything that resolves outside `reports/` (e.g. a planted symlink).

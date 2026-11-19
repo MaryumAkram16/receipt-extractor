@@ -158,3 +158,89 @@ def test_symlink_escaping_reports_dir_is_refused(client, tmp_path):
     link = generator.REPORTS_DIR / "spending-report-abcdefabcd.pdf"
     os.symlink(secret, link)
     assert client.get("/reports/spending-report-abcdefabcd.pdf").status_code == 404
+
+
+# --- regression: vendor totals must never mix currencies ----------------------
+
+def test_vendor_with_receipts_in_multiple_currencies_is_split_per_currency():
+    _insert(vendor="Global Mart", total=1000, currency="PKR")
+    _insert(vendor="Global Mart", total=500, currency="PKR")
+    _insert(vendor="Global Mart", total=20, currency="USD")
+
+    rows = db.query_summary()["top_vendors"]
+    by_key = {(r["vendor"], r["currency"]): (r["total"], r["n"]) for r in rows}
+    assert by_key == {("Global Mart", "PKR"): (1500.0, 2), ("Global Mart", "USD"): (20.0, 1)}
+    # the buggy query produced a single row totalling 1520 "units" of nothing
+    assert all(r["total"] != 1520 for r in rows)
+
+
+def test_vendor_rows_keep_existing_fields_and_add_currency():
+    _insert(vendor="Cafe Aroma", total=1082, currency="PKR")
+    [row] = db.query_summary()["top_vendors"]
+    assert row == {"vendor": "Cafe Aroma", "currency": "PKR", "total": 1082.0, "n": 1}
+
+
+def test_vendor_with_unknown_currency_is_its_own_group():
+    _insert(vendor="Mystery Shop", total=800, currency=None)
+    _insert(vendor="Mystery Shop", total=5, currency="USD")
+    by_key = {(r["vendor"], r["currency"]): r["total"] for r in db.query_summary()["top_vendors"]}
+    assert by_key == {("Mystery Shop", "unknown"): 800.0, ("Mystery Shop", "USD"): 5.0}
+
+
+def test_top_vendors_are_ranked_within_each_currency_not_across_currencies():
+    # Large PKR amounts must not crowd every USD vendor out of the top list.
+    for i in range(12):
+        _insert(vendor=f"PKR vendor {i}", total=10_000 + i, currency="PKR")
+    _insert(vendor="Small USD vendor", total=3, currency="USD")
+
+    rows = db.query_summary()["top_vendors"]
+    pkr = [r for r in rows if r["currency"] == "PKR"]
+    usd = [r for r in rows if r["currency"] == "USD"]
+    assert len(pkr) == 10                      # still capped at 10 per currency
+    assert [r["vendor"] for r in usd] == ["Small USD vendor"]
+    assert [r["total"] for r in pkr] == sorted((r["total"] for r in pkr), reverse=True)
+
+
+def test_vendor_date_filter_applies_to_currency_split():
+    _insert(vendor="Global Mart", total=100, currency="PKR", created_at="2025-06-01T10:00:00.000000+00:00")
+    _insert(vendor="Global Mart", total=7, currency="USD", created_at="2025-07-01T10:00:00.000000+00:00")
+    start = db.normalize_bound("2025-06-15", end=False)
+    rows = db.query_summary(start_date=start)["top_vendors"]
+    assert [(r["vendor"], r["currency"], r["total"]) for r in rows] == [("Global Mart", "USD", 7.0)]
+
+
+def test_pdf_vendor_table_shows_currency_per_row(monkeypatch):
+    _insert(vendor="Global Mart", total=1000, currency="PKR")
+    _insert(vendor="Global Mart", total=20, currency="USD")
+
+    captured = {}
+    real_table = generator.Table
+
+    def spy_table(data, *args, **kwargs):
+        if data and data[0] and data[0][0] == "Vendor":
+            captured["rows"] = data
+        return real_table(data, *args, **kwargs)
+
+    monkeypatch.setattr(generator, "Table", spy_table)
+    result = generator.generate_report()
+
+    assert captured["rows"][0] == ["Vendor", "Currency", "Total", "Receipts"]
+    assert sorted(captured["rows"][1:]) == [
+        ["Global Mart", "PKR", "1,000.00", "1"],
+        ["Global Mart", "USD", "20.00", "1"],
+    ]
+    path = generator.REPORTS_DIR / result["report_url"].removeprefix("/reports/")
+    assert path.read_bytes().startswith(b"%PDF")
+
+
+def test_report_job_result_exposes_currency_per_vendor(client):
+    from .conftest import run_queued_jobs
+
+    _insert(vendor="Global Mart", total=1000, currency="PKR")
+    _insert(vendor="Global Mart", total=20, currency="USD")
+    job_id = client.post("/jobs/report", json={}).json()["job_id"]
+    run_queued_jobs()
+    vendors = client.get(f"/jobs/{job_id}").json()["result"]["summary"]["top_vendors"]
+    assert {(v["vendor"], v["currency"], v["total"]) for v in vendors} == {
+        ("Global Mart", "PKR", 1000.0), ("Global Mart", "USD", 20.0),
+    }

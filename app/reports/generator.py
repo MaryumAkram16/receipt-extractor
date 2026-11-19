@@ -104,14 +104,15 @@ def _render_pdf(filepath: Path, summary: dict) -> None:
         story.append(Paragraph("No data yet.", styles["Normal"]))
 
     # --- Top vendors ---
-    story.append(Paragraph("Top vendors by spend", heading_style))
+    # One row per (vendor, currency): totals are never summed across currencies.
+    story.append(Paragraph("Top vendors by spend (per currency)", heading_style))
     if summary["top_vendors"]:
-        rows = [["Vendor", "Total", "Receipts"]]
+        rows = [["Vendor", "Currency", "Total", "Receipts"]]
         for row in summary["top_vendors"]:
             total = row["total"] if row["total"] is not None else 0
-            rows.append([row["vendor"], f"{total:,.2f}", str(row["n"])])
-        t = Table(rows, colWidths=[3 * inch, 1.5 * inch, 1.5 * inch])
-        t.setStyle(_table_style())
+            rows.append([row["vendor"], row["currency"], f"{total:,.2f}", str(row["n"])])
+        t = Table(rows, colWidths=[2.7 * inch, 1.1 * inch, 1.3 * inch, 0.9 * inch])
+        t.setStyle(_table_style(first_numeric_col=2))
         story.append(t)
     else:
         story.append(Paragraph("No data yet.", styles["Normal"]))
@@ -125,7 +126,7 @@ def _render_pdf(filepath: Path, summary: dict) -> None:
     doc.build(story)
 
 
-def _table_style() -> TableStyle:
+def _table_style(first_numeric_col: int = 1) -> TableStyle:
     return TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f4f6")),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
@@ -133,5 +134,5 @@ def _table_style() -> TableStyle:
         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
         ("TOPPADDING", (0, 0), (-1, -1), 6),
         ("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.lightgrey),
-        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        ("ALIGN", (first_numeric_col, 0), (-1, -1), "RIGHT"),
     ])
