@@ -9,7 +9,23 @@ EXTRACT_ENDPOINTS = ["/extract", "/jobs/extract"]
 def test_health_reports_status_and_llm_mode(client):
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok", "llm_mode": "live"}
+    assert resp.json() == {
+        "status": "ok", "llm_mode": "live", "prompt_version": "extract-v2", "model": "test-model",
+    }
+
+
+@pytest.mark.parametrize("env", [{"LLM_STUB": "1"}, {"LLM_ENABLED": "false"}])
+def test_health_hides_model_when_not_live(client, monkeypatch, env):
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    body = client.get("/health").json()
+    assert body["model"] is None
+    assert body["prompt_version"] == "extract-v2"
+
+
+def test_health_never_exposes_api_key(client):
+    from .conftest import FAKE_KEY
+    assert FAKE_KEY not in client.get("/health").text
 
 
 @pytest.mark.parametrize("env, expected", [
