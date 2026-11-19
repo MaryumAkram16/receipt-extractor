@@ -30,7 +30,7 @@ are stored in SQLite and can be summarised into PDF spending reports, on demand 
   API keys and provider error bodies are never logged. Public errors are fixed, sanitized messages.
 - **Reporting pipeline.** SQLite persistence, one aggregation query, ReportLab PDFs, safe file
   downloads and optional scheduled generation.
-- **Tested and CI-verified.** 181 pytest tests use a fake LLM client (no network). CI is split
+- **Tested and CI-verified.** 298 pytest tests use a fake LLM client (no network). CI is split
   into deterministic jobs and a separate, opt-in live evaluation.
 
 ## Architecture
@@ -115,7 +115,7 @@ How a request flows:
 | `POST` | `/jobs/report` | Queue a PDF report job | `202` `{job_id, status}` + `Location` header | `400` invalid dates · `409` idempotency conflict |
 | `GET` | `/jobs/{job_id}` | Job status and result | `200` JobStatus | `404` unknown job |
 | `GET` | `/reports/{filename}` | Download a generated PDF | `200` `application/pdf` | `400` invalid filename · `404` not found |
-| `GET` | `/health` | Liveness + active LLM mode | `200` `{"status": "ok", "llm_mode": "live" \| "stub" \| "disabled"}` | — |
+| `GET` | `/health` | Liveness, active LLM mode, prompt version, model | `200` `{"status": "ok", "llm_mode": "live" \| "stub" \| "disabled", "prompt_version": "extract-v2", "model": "<LLM_MODEL in live mode, else null>"}` | — |
 
 Interactive OpenAPI docs are served at `/docs` when the app is running.
 
@@ -206,7 +206,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-All 181 tests run offline in about a second. A fake OpenAI-compatible client stands in for the
+All 298 tests run offline in about a second. A fake OpenAI-compatible client stands in for the
 provider, and an autouse guard fails any test that tries to make a real model call. Each test
 gets its own temporary SQLite database, reports directory and logs directory. Background jobs
 are processed synchronously, and retry waits are recorded instead of slept, so nothing depends
@@ -214,12 +214,13 @@ on timing.
 
 | File | Tests | Covers |
 |---|---|---|
-| `tests/test_api_validation.py` | 33 | empty / blank / missing / wrong-type / over-length input, malformed bodies, status codes, `/health` modes, report date validation |
+| `tests/test_api_validation.py` | 36 | empty / blank / missing / wrong-type / over-length input, malformed bodies, status codes, `/health` fields and modes, report date validation |
 | `tests/test_extraction.py` | 29 | valid & invalid JSON, missing fields, schema failures, repair retry, quarantine contents, kill switch, stub mode, persistence |
 | `tests/test_llm_failures.py` | 45 | timeout, 429, 500/502/503/504, 400/401/403, retry exhaustion, backoff bounds, error → HTTP mapping, missing config, no secrets in logs |
 | `tests/test_jobs.py` | 30 | job lifecycle and status transitions, idempotency (same/different payload, per-kind scope, concurrency), duplicate enqueue, worker retry policy, nested-retry budget, alerts |
 | `tests/test_reports.py` | 39 | SQLite persistence, aggregation, currency grouping (including vendors with receipts in several currencies), date filters, PDF generation, downloads, path traversal and symlink protection |
-| `tests/test_eval_runner.py` | 5 | evaluator refuses to score stub/disabled servers; contract mode |
+| `tests/test_eval_runner.py` | 31 | evaluator refuses to score stub/disabled servers; contract mode; per-field accuracy, needs_review precision/recall, per-category results, request-error handling, dated Markdown report |
+| `tests/test_eval_cases.py` | 88 | the labelled dataset itself: 50 cases, unique names, known categories, valid labels, needs_review consistency |
 
 ## CI/CD
 
@@ -249,6 +250,7 @@ real model.
   model evaluation.
 - The key goes only into the step that starts the server. The app never logs it, and GitHub
   masks secret values.
+- The dated Markdown report (see [Eval](#eval)) is uploaded as the `eval-report` run artifact.
 
 ## Reliability and security
 
@@ -309,8 +311,9 @@ real model.
   replayed after a restart creates a new job.
 - **Unbounded job history.** Finished jobs are never evicted from memory.
 - **No request rate limiting** on the API itself.
-- **Small evaluation set.** 8 hand-labelled cases. The historical 8/8 result (below) is a sanity
-  check, not a statistically meaningful accuracy figure, and LLM output is not deterministic.
+- **Small evaluation set.** 50 hand-labelled synthetic cases (4–9 per category). That is enough to
+  spot regressions by category, not to quote a precise accuracy figure, and LLM output is not
+  deterministic, so repeated runs can differ.
 - **Stub mode tests contracts, not quality.** CI proves the plumbing and schema. Only the live
   evaluation says anything about extraction accuracy.
 
@@ -320,8 +323,8 @@ real model.
   restarts and support multiple instances.
 - Add API-key authentication and signed, expiring report URLs.
 - Honour `Retry-After` on `429` responses, and add a circuit breaker for sustained provider outages.
-- Grow the eval set: adversarial cases, the conflicting-currency case below, and per-field
-  accuracy tracked over time.
+- Grow the eval set further (the conflicting-currency case below, real anonymised receipts), and
+  track per-field accuracy across runs over time.
 - Add request IDs and structured tracing (for example, OpenTelemetry) across API → worker → provider.
 
 ---
@@ -371,8 +374,34 @@ which is exactly why the provider should never be hard-coded.
 
 ## Eval
 
-`evals/cases.json` has 8 hand-labelled cases, including one non-receipt input and two cases that
-should hit the "when unsure → needs_review" rule. Run against a live server:
+`evals/cases.json` has **50 hand-labelled cases**: the original 8 plus 42 synthetic ones. All
+vendors, customers and amounts are fictional. Every case has a `category`:
+
+| Category | Cases | What it tests |
+|---|---|---|
+| `currency` | 9 | PKR, USD, EUR (including `1.234,50 €`), GBP, AED, and receipts with no currency at all |
+| `date_format` | 9 | `12/06/2025` (ambiguous → `null`), `25/06/2025`, ISO with time, `12 Jun 25`, Urdu and Roman Urdu month names, Urdu digits, Hijri-only dates |
+| `total_selection` | 6 | subtotal, tax, tip, service charge and total on one receipt; cash tendered and change; VAT excluded vs included |
+| `ocr_noise` | 5 | `O` for `0`, `S` for `5`, broken lines, extra whitespace, stray symbols |
+| `discount_refund` | 5 | discounts, coupons, returned items, loyalty points, a full refund |
+| `multi_page` | 4 | carried-forward subtotals, page totals vs invoice total, three pages, sender vs bill-to |
+| `non_receipt` | 5 | email, news snippet with a dollar figure, code, a prompt-injection attempt |
+| `ambiguous` | 7 | conflicting totals, a total in two currencies, a bare fragment, an illegible total, missing vendor/date/total |
+
+How cases are labelled:
+
+- A field appears in `expected` only when its correct value follows clearly from the
+  [job card](JOB-CARD.md). Debatable fields are left out, so they aren't scored. For example,
+  whether a heavily OCR-damaged receipt should be flagged for review.
+- `needs_review: false` is used only when vendor, date, total and currency are all clearly present.
+- AED isn't one of the schema's currencies, so AED receipts expect `currency: "other"`.
+- Slash dates where both numbers are 12 or less (`12/06/2025`) are ambiguous, so they expect
+  `date: null`, as the prompt instructs.
+
+Labelled per field: vendor 49 cases, date 48, total 45, currency 48, `needs_review` 40
+(17 expect `true`, 23 expect `false`). `tests/test_eval_cases.py` checks these rules in CI.
+
+**Run it** against a live server:
 
 ```bash
 uvicorn app.main:app &
@@ -380,9 +409,36 @@ python -m evals.run_eval                       # labelled mode; refuses unless /
 python -m evals.run_eval --mode contract       # schema-only check, works in stub mode
 ```
 
-**Historical result: 8/8 — run manually on 2026-08-15 — prompt extract-v2 — 8 cases.**
-This was not re-run as part of the reliability changes. With only 8 cases, treat it as a regression
-check rather than an accuracy estimate.
+Labelled mode prints a JSON summary and writes a dated Markdown report to
+`reports/eval-YYYY-MM-DD.md`. A second run on the same day writes `-2`, `-3` and so on instead of
+overwriting. Use `--report-dir` to change the location, or `--no-report` to skip the file.
+`reports/` is git-ignored, so reports aren't committed. The report contains:
+
+- the prompt version and model, as reported by the server's `/health`
+- overall pass count (a case passes when every labelled field matches)
+- accuracy for vendor, date, total and currency
+- `needs_review` precision and recall, where "positive" means the model flagged the receipt for review
+- pass rate and per-field accuracy for each category, and every failing case with the mismatch
+
+Scoring rules:
+
+- vendor is compared case-insensitively with whitespace collapsed
+- total is compared numerically, within 0.005
+- date, currency and `needs_review` must match exactly
+- a request that fails (non-200) counts as wrong for every field the case labels
+
+### Results
+
+**No live run on the 50-case set yet.** Live evaluation is disabled until API credentials are
+approved, so there are no scores to report.
+
+| Prompt | Model | Date | Passed | Vendor | Date | Total | Currency | needs_review P / R |
+|---|---|---|---|---|---|---|---|---|
+| extract-v2 | — | — | _pending live run_ | — | — | — | — | — / — |
+
+**Historical result (original 8-case set): 8/8 — run manually on 2026-08-15 — prompt extract-v2.**
+That run covered only the original 8 cases, not this set, and with so few cases it was a sanity
+check, not an accuracy estimate.
 
 v1 scored 7/8, failing `ambiguous_currency`: a receipt with a plain number total and no currency
 symbol or code, where the model returned `needs_review: false` instead of flagging the missing
@@ -593,8 +649,8 @@ prompts/
   extract-v1.md        the prompt, versioned
   extract-v2.md        v2: adds a no-currency-indicator example, fixes the ambiguous_currency case
 evals/
-  cases.json           8 labelled cases
-  run_eval.py          labelled (live) and contract (stub-safe) evaluation against a running instance
+  cases.json           50 labelled cases, each tagged with a category
+  run_eval.py          labelled (live: per-field accuracy + dated report) and contract (stub-safe) evaluation
 benchmarks/
   bench_extract.py     latency / error-rate benchmark against a running instance
 tests/                 pytest suite (fake LLM client, temp DB/files, no network)

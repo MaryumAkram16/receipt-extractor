@@ -75,6 +75,15 @@ jobs:
         if: steps.creds.outputs.available == 'true'
         run: python -m evals.run_eval --mode labelled --require-llm-mode live
 
+      - name: Upload evaluation report
+        # reports/eval-YYYY-MM-DD.md is git-ignored, so keep it as a run artifact.
+        if: always() && steps.creds.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: reports/eval-*.md
+          if-no-files-found: ignore
+
       - name: Show API log
         # The app never logs the API key, request headers or receipt text;
         # GitHub additionally masks secret values in all log output.

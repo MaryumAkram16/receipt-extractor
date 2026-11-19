@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -10,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from .config import llm_mode
+from .llm.client import PROMPT_VERSION
 from .routes.extract import router as extract_router
 from .routes.jobs import router as jobs_router
 from .routes.reports import router as reports_router
@@ -54,5 +56,15 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.get("/health")
 def health():
     # llm_mode ("live" | "stub" | "disabled") lets evaluation tooling refuse
-    # to score a server that isn't actually calling a model.
-    return {"status": "ok", "llm_mode": llm_mode()}
+    # to score a server that isn't actually calling a model. prompt_version
+    # and model let an evaluation report record what was actually running.
+    # The model name is only reported in live mode (it isn't used otherwise)
+    # and is never a secret; the API key is never exposed.
+    mode = llm_mode()
+    model = os.environ.get("LLM_MODEL", "").strip() or None
+    return {
+        "status": "ok",
+        "llm_mode": mode,
+        "prompt_version": PROMPT_VERSION,
+        "model": model if mode == "live" else None,
+    }
