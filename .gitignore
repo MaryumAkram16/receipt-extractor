@@ -1,8 +1,17 @@
 .env
+.env.*
+!.env.example
 __pycache__/
 *.pyc
 .venv/
-logs/quarantine.jsonl
-logs/alerts.jsonl
-data/extractions.db
-reports/*.pdf
+venv/
+.pytest_cache/
+
+# Runtime output: may contain financial data or diagnostics. Keep the
+# directories (via .gitkeep), never the contents.
+logs/*
+!logs/.gitkeep
+data/*
+!data/.gitkeep
+reports/*
+!reports/.gitkeep

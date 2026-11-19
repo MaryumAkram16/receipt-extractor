@@ -6,14 +6,15 @@ other external data: parse, validate, and if it fails, quarantine rather
 than trust it or crash.
 """
 import json
-import os
 import re
 
 from pydantic import ValidationError
 
 from .client import call_model, load_prompt, quarantine
+from .errors import InvalidModelOutput
 from .schema import ExtractResult
 from .. import db
+from ..config import llm_enabled, llm_stub
 
 STUB_RESULT = ExtractResult(
     vendor="Stub Cafe",
@@ -39,10 +40,10 @@ def run_extraction(user_text: str) -> ExtractResult:
     use — it's the one place stub mode and the kill switch are checked, so
     neither path can accidentally make a real call when it shouldn't.
     """
-    if os.environ.get("LLM_ENABLED", "true").lower() == "false":
-        return FALLBACK_RESULT
-    if os.environ.get("LLM_STUB") == "1":
-        return STUB_RESULT
+    if not llm_enabled():
+        return FALLBACK_RESULT.model_copy()
+    if llm_stub():
+        return STUB_RESULT.model_copy()
 
     result = extract(user_text)
     # Only real model extractions get persisted — stub and kill-switch
@@ -87,17 +88,35 @@ def extract(user_text: str) -> ExtractResult:
         return result2
 
     quarantine(user_text, raw2, error2 or "unknown parse/validation error")
-    raise ValueError(error2 or "model output failed validation after repair")
+    # Generic on purpose: error2 can quote the model's output, which may
+    # contain receipt contents. Details live in the quarantine record.
+    raise InvalidModelOutput("model output failed validation after repair")
+
+
+def describe_validation_error(exc: ValidationError) -> str:
+    """Field path + message for each error, *without* the offending input
+    value. Pydantic's default str(exc) embeds `input_value=...`, i.e. a slice
+    of the model's output, which must not reach logs or API responses."""
+    parts = []
+    for err in exc.errors(include_input=False, include_url=False):
+        loc = ".".join(str(p) for p in err.get("loc", ())) or "(root)"
+        parts.append(f"{loc}: {err.get('msg', 'invalid')}")
+    return "schema validation failed: " + "; ".join(parts)
 
 
 def _try_parse(raw: str):
-    candidate = _strip_fence(raw)
+    candidate = _strip_fence(raw or "")
     try:
         data = json.loads(candidate)
     except json.JSONDecodeError as exc:
+        # JSONDecodeError's message is position-only ("Expecting value: line 1
+        # column 1 (char 0)") and never quotes the document.
         return None, f"invalid JSON: {exc}"
+
+    if not isinstance(data, dict):
+        return None, f"invalid JSON: expected an object, got {type(data).__name__}"
 
     try:
         return ExtractResult.model_validate(data), None
     except ValidationError as exc:
-        return None, str(exc)
+        return None, describe_validation_error(exc)

@@ -1,3 +1,6 @@
+# Deterministic CI: runs on every push and pull request to main.
+# Needs no secrets and makes no model-provider calls. Real-model evaluation
+# lives in live-eval.yml and only runs when credentials exist.
 name: Verify Receipt Extractor
 
 on:
@@ -6,42 +9,82 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  verify:
+  tests:
+    name: Unit and API tests (pytest)
     runs-on: ubuntu-latest
-    env:
-      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-      LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
-      LLM_MODEL: ${{ secrets.LLM_MODEL }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Syntax check
+        run: python -m compileall -q app evals benchmarks tests
+      - name: Run tests
+        run: python -m pytest
+
+  stub-smoke:
+    name: API smoke test (stub mode)
+    needs: tests
+    runs-on: ubuntu-latest
+    env:
+      # Stub mode on purpose: deterministic, free, no credentials in this job.
+      LLM_STUB: '1'
+      LLM_ENABLED: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements*.txt
       - run: python -m pip install -r requirements.txt
-      - run: python -m compileall -q app evals
-      - run: docker build -t receipt-extractor:ci .
       - name: Start API
-        env:
-          LLM_STUB: '1'
         run: uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/receipt-api.log 2>&1 &
       - name: Wait for API
         run: |
           for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:8000/docs >/dev/null; then exit 0; fi
+            if curl --fail --silent http://127.0.0.1:8000/health; then echo; exit 0; fi
             sleep 1
           done
-          cat /tmp/receipt-api.log
+          echo "API did not become healthy" >&2
           exit 1
-      - name: Run deterministic schema smoke test
-        env:
-          LLM_STUB: '1'
+      - name: Contract evaluation (schema + background job round trip)
+        # --require-llm-mode stub: fails if the server is unexpectedly live.
+        run: python -m evals.run_eval --mode contract --require-llm-mode stub
+      - name: Show API log
+        if: failure()
+        run: cat /tmp/receipt-api.log
+
+  docker:
+    name: Docker build and container smoke test
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t receipt-extractor:ci .
+      - name: Run container in stub mode
+        run: docker run -d --name receipt-api -e LLM_STUB=1 -p 8000:8000 receipt-extractor:ci
+      - name: Check container health and /extract
         run: |
-          response=$(curl --fail --silent -X POST http://127.0.0.1:8000/extract \
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/health; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8000/health | grep -q '"llm_mode":"stub"'
+          curl --fail --silent -X POST http://127.0.0.1:8000/extract \
             -H 'Content-Type: application/json' \
-            -d '{"text":"Cafe Aroma\\nTotal: PKR 1082"}')
-          python -c 'import json,sys; d=json.loads(sys.argv[1]); assert set(["vendor","date","total_amount","currency","confidence","needs_review"]).issubset(d); print(json.dumps(d, indent=2))' "$response"
-      - name: Run labelled evaluation when provider credentials are available
-        if: ${{ env.LLM_API_KEY != '' }}
-        run: python -m evals.run_eval --base-url http://127.0.0.1:8000
+            -d '{"text":"Cafe Aroma\nTotal: PKR 1082"}'
+      - name: Show container log
+        if: failure()
+        run: docker logs receipt-api
