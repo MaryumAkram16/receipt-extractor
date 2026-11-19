@@ -4,6 +4,8 @@ Model output is untrusted input, exactly like data arriving from an external
 API. Everything here exists to reject anything that doesn't match, before it
 ever reaches a caller.
 """
+import re
+from datetime import date as _date
 from enum import Enum
 from typing import Optional
 
@@ -19,6 +21,9 @@ class ExtractRequest(BaseModel):
         if not v.strip():
             raise ValueError("text must not be blank")
         return v
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class Currency(str, Enum):
@@ -42,8 +47,10 @@ class ExtractResult(BaseModel):
     def date_shape(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
-        import re
-
-        if not re.match(r"^\d{4}-\d{2}-\d{2}$", v):
+        if not _DATE_RE.match(v):
             raise ValueError("date must be YYYY-MM-DD or null")
+        try:
+            _date.fromisoformat(v)  # rejects shape-valid but impossible dates like 2025-13-45
+        except ValueError:
+            raise ValueError("date must be a real calendar date") from None
         return v

@@ -13,10 +13,10 @@ instances is something like APScheduler with a persistent job store, or an
 external cron hitting POST /jobs/report.
 """
 import logging
-import os
 import threading
 import time
 
+from .config import env_flag, env_int
 from .jobs.store import store
 from .jobs.worker import enqueue
 
@@ -26,19 +26,30 @@ _started = False
 _start_lock = threading.Lock()
 
 
+def trigger_scheduled_report() -> str:
+    """One scheduled tick: enqueue a report job through the normal path."""
+    job = store.create("report", {"start_date": None, "end_date": None}, idempotency_key=None)
+    enqueue(job.id)
+    logger.info('{"scheduled_report_job_id": "%s"}', job.id)
+    return job.id
+
+
 def _scheduler_loop(interval_seconds: int) -> None:
     while True:
         time.sleep(interval_seconds)
-        job = store.create("report", {"start_date": None, "end_date": None}, idempotency_key=None)
-        enqueue(job.id)
-        logger.info('{"scheduled_report_job_id": "%s"}', job.id)
+        try:
+            trigger_scheduled_report()
+        except Exception:  # noqa: BLE001 — one bad tick must not kill the scheduler thread
+            logger.exception("scheduled report trigger failed")
 
 
 def start_scheduler() -> None:
     global _started
-    if os.environ.get("REPORT_SCHEDULE_ENABLED", "false").lower() != "true":
+    if not env_flag("REPORT_SCHEDULE_ENABLED", False):
         return
-    interval = int(os.environ.get("REPORT_SCHEDULE_INTERVAL_SECONDS", "86400"))  # default: daily
+    # default: daily. An unparseable value falls back to the default instead
+    # of crashing app startup; values are clamped to 10s..30 days.
+    interval = env_int("REPORT_SCHEDULE_INTERVAL_SECONDS", 86400, minimum=10, maximum=30 * 86400)
     with _start_lock:
         if _started:
             return
