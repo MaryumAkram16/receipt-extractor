@@ -31,7 +31,7 @@ are stored in SQLite and can be summarised into PDF spending reports, on demand 
 - **Reporting pipeline.** SQLite persistence, one aggregation query, ReportLab PDFs, safe file
   downloads and optional scheduled generation.
 - **Tested and CI-verified.** 174 pytest tests use a fake LLM client (no network). CI is split
-  into deterministic jobs and a separate, credential-gated live evaluation.
+  into deterministic jobs and a separate, opt-in live evaluation.
 
 ## Architecture
 
@@ -239,10 +239,11 @@ Any failing test or check fails the workflow.
 **[`live-eval.yml`](.github/workflows/live-eval.yml)** runs the labelled evaluation against a
 real model.
 
-- It never runs on pull requests. It runs on manual dispatch, and on pushes to `main` that
-  touch the app, prompts or eval set.
-- It runs only if the `LLM_API_KEY` repository secret exists. Otherwise the job ends with a
-  notice and makes no calls.
+- **Disabled by default.** It never runs on pull requests or pushes. It runs only when started
+  manually (*Actions → Live LLM evaluation → Run workflow*) **and** the repository variable
+  `ENABLE_LIVE_EVAL` is set to `true`.
+- It also needs the `LLM_API_KEY` repository secret. Without it the job ends with a notice and
+  makes no calls.
 - The API starts with `LLM_STUB=0` explicitly. The evaluator also checks `/health` and refuses
   to score unless `llm_mode` is `live`. This stops stub responses from ever being reported as a
   model evaluation.

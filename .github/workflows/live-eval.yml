@@ -1,23 +1,18 @@
 # Real-model evaluation against the labelled cases in evals/cases.json.
 #
-# - Never runs on pull requests: no paid/quota-limited calls in normal PR CI,
-#   and secrets aren't available to fork PRs anyway.
-# - Runs on manual dispatch, and on pushes to main that touch the app,
-#   prompts or eval set — but only if the LLM_API_KEY secret is configured.
-#   Without it the job finishes successfully with a notice instead.
-# - The API is started with LLM_STUB=0 explicitly, and the evaluator refuses
-#   to score unless GET /health reports llm_mode == "live".
+# DISABLED BY DEFAULT. It runs only when BOTH are true:
+#   1. someone starts it manually (Actions -> Live LLM evaluation -> Run workflow), and
+#   2. the repository variable ENABLE_LIVE_EVAL is set to "true"
+#      (Settings -> Secrets and variables -> Actions -> Variables),
+# and it additionally needs the LLM_API_KEY secret. It never runs on pull
+# requests or pushes, so normal CI never makes paid/quota-limited calls.
+#
+# The API is started with LLM_STUB=0 explicitly, and the evaluator refuses
+# to score unless GET /health reports llm_mode == "live".
 name: Live LLM evaluation
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'app/**'
-      - 'prompts/**'
-      - 'evals/**'
-      - 'requirements.txt'
 
 permissions:
   contents: read
@@ -28,6 +23,8 @@ concurrency:
 
 jobs:
   live-eval:
+    # Explicit opt-in switch; without it the job is skipped and no secret is read.
+    if: ${{ vars.ENABLE_LIVE_EVAL == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
