@@ -248,3 +248,50 @@ def test_render_report_handles_empty_metrics():
     report = run_eval.render_report(s, NOW, "http://x")
     assert "| Precision | n/a |" in report
     assert "| vendor | 0 | 0 | n/a |" in report
+
+
+# --- timeouts and provider failures -----------------------------------------------
+
+def test_post_case_turns_a_timeout_or_connection_error_into_a_failed_case():
+    import httpx
+
+    class Timeout:
+        def post(self, path, json):
+            raise httpx.ReadTimeout("timed out")
+
+    class Refused:
+        def post(self, path, json):
+            raise httpx.ConnectError("refused")
+
+    case = {"input": "Cafe Aroma\nTotal: PKR 1082"}
+    assert run_eval._post_case(Timeout(), case) == {"status": None, "body": None, "text": "no response: client timeout"}
+    assert run_eval._post_case(Refused(), case)["text"] == "no response: ConnectError"
+
+
+def test_client_timeout_outlasts_the_api_worst_case():
+    from app.llm import client as llm
+    # Each attempt has a 30 s timeout; a repair can double the number of calls.
+    worst = 2 * (llm.MAX_ATTEMPTS * 30 + sum(llm.BACKOFF_MAX_SECONDS for _ in range(llm.MAX_ATTEMPTS - 1)))
+    assert run_eval.REQUEST_TIMEOUT_SECONDS > worst
+
+
+def test_provider_failures_are_counted_separately_and_the_run_continues():
+    cases = [
+        _case("timeout", {"vendor": "A"}),
+        _case("unavailable", {"vendor": "B"}),
+        _case("bad_input", {"vendor": "C"}),
+        _case("fine", {"vendor": "D"}),
+    ]
+    responses = [
+        {"status": None, "body": None, "text": "no response: client timeout"},
+        {"status": 503, "body": {"detail": "x"}, "text": "upstream"},
+        {"status": 422, "body": {"detail": "x"}, "text": "invalid"},
+        _ok(_answer({"vendor": "D"})),
+    ]
+    s = run_eval.score_labelled(cases, responses)
+    assert (s["passed"], s["errors"], s["provider_failures"]) == (1, 3, 2)
+    reasons = {f["name"]: f["reason"] for f in s["failures"]}
+    assert reasons["timeout"] == "no response: client timeout"
+    assert reasons["unavailable"].startswith("HTTP 503")
+    report = run_eval.render_report({**s, "llm_mode": "live", "prompt_version": "v", "model": "m"}, NOW, "http://x")
+    assert "| of which provider failures (no response, 502/503/504) | 2 |" in report

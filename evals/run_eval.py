@@ -29,8 +29,13 @@ Scoring rules:
     - vendor: compared case-insensitively with whitespace collapsed.
     - total: numeric, within 0.005.
     - date, currency, needs_review: exact.
-    - A case whose request failed (non-200) counts as wrong for every field it
-      expected, and as a missed flag if it expected needs_review true.
+    - A case whose request failed (non-200, or no response at all: a client
+      timeout or connection error) counts as wrong for every field it
+      expected, and as a missed flag if it expected needs_review true. The run
+      carries on with the next case.
+    - Provider failures (no response, or 502/503/504 from the API) are also
+      counted separately, so an outage at the model provider is not mistaken
+      for extraction mistakes.
 
 Prints a JSON summary and exits non-zero on any failure.
 """
@@ -130,7 +135,7 @@ def score_labelled(cases: list[dict], responses: list[dict]) -> dict:
     nr = {"tp": 0, "fp": 0, "fn": 0, "tn": 0, "correct": 0, "cases": 0}
     categories: dict[str, dict] = {}
     failures = []
-    passed = errors = 0
+    passed = errors = provider_failures = 0
 
     for case, resp in zip(cases, responses):
         category = case.get("category") or UNCATEGORIZED
@@ -164,7 +169,12 @@ def score_labelled(cases: list[dict], responses: list[dict]) -> dict:
         if not ok:
             errors += 1
             cat["errors"] += 1
-            reason = f"HTTP {resp.get('status')}: {str(resp.get('text', ''))[:200]}"
+            status = resp.get("status")
+            if status is None or status in PROVIDER_FAILURE_STATUSES:
+                provider_failures += 1
+            prefix = "no response" if status is None else f"HTTP {status}"
+            text = str(resp.get("text", ""))
+            reason = text[:200] if status is None else f"{prefix}: {text[:200]}"
             failures.append({"name": case["name"], "category": category, "reason": reason})
             continue
 
@@ -181,6 +191,7 @@ def score_labelled(cases: list[dict], responses: list[dict]) -> dict:
         "total": total,
         "failed": total - passed,
         "errors": errors,
+        "provider_failures": provider_failures,
         "field_accuracy": _finish_field_counts(fields),
         "needs_review": {
             **nr,
@@ -228,6 +239,7 @@ def render_report(summary: dict, run_at: datetime, base_url: str) -> str:
         f"| Passed (every expected field correct) | {summary['passed']}/{summary['total']} "
         f"({_pct(_ratio(summary['passed'], summary['total']))}) |",
         f"| Request errors | {summary['errors']} |",
+        f"| of which provider failures (no response, 502/503/504) | {summary.get('provider_failures', 0)} |",
         "",
         "## Field accuracy",
         "",
@@ -303,8 +315,26 @@ def _check_job_roundtrip(client, text: str, timeout_s: float = 30.0) -> list[str
     return [f"job {job_id} did not finish within {timeout_s}s"]
 
 
+# Longer than the API's own worst case for one request: up to 3 model attempts
+# of 30 s each plus backoff (~94 s), and the same again if a repair call is
+# needed. A shorter client timeout gave up on requests the API was still
+# retrying, and used to abort the whole run.
+REQUEST_TIMEOUT_SECONDS = 240.0
+
+# HTTP statuses the API returns when the model provider failed (see the retry
+# policy in app/llm/errors.py), as opposed to a bad extraction.
+PROVIDER_FAILURE_STATUSES = {502, 503, 504}
+
+
 def _post_case(client, case: dict) -> dict:
-    resp = client.post("/extract", json={"text": case["input"]})
+    """POST one case. A timeout or connection error becomes a failed case
+    (status None) instead of an exception that stops the run."""
+    try:
+        resp = client.post("/extract", json={"text": case["input"]})
+    except httpx.TimeoutException:
+        return {"status": None, "body": None, "text": "no response: client timeout"}
+    except httpx.TransportError as exc:
+        return {"status": None, "body": None, "text": f"no response: {type(exc).__name__}"}
     try:
         body = resp.json()
     except ValueError:
@@ -346,7 +376,7 @@ def run(base_url: str = "http://127.0.0.1:8000", mode: str = "labelled",
     cases = json.loads(Path(cases_path).read_text(encoding="utf-8"))
     owns_client = client is None
     if owns_client:
-        client = httpx.Client(base_url=base_url, timeout=60.0)
+        client = httpx.Client(base_url=base_url, timeout=REQUEST_TIMEOUT_SECONDS)
 
     try:
         health = _server_health(client)
