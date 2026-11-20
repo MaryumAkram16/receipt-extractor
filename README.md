@@ -429,12 +429,33 @@ Scoring rules:
 
 ### Results
 
-**No live run on the 50-case set yet.** Live evaluation is disabled until API credentials are
-approved, so there are no scores to report.
+**First live run on the 50-case set: 42/50 — 2026-11-20 — prompt extract-v2 — `gpt-4o-mini`**
+([workflow run](https://github.com/MaryumAkram16/receipt-extractor/actions/runs/44754639064), report kept as
+the `eval-report` artifact). All 50 model calls succeeded, so there were no provider failures: every
+miss below is an extraction mistake.
 
 | Prompt | Model | Date | Passed | Vendor | Date | Total | Currency | needs_review P / R |
 |---|---|---|---|---|---|---|---|---|
-| extract-v2 | — | — | _pending live run_ | — | — | — | — | — / — |
+| extract-v2 | gpt-4o-mini | 2026-11-20 | 42/50 (84%) | 49/49 | 46/48 | 44/45 | 48/48 | 100% / 59% (10/17) |
+
+By category: total selection 6/6, multi-page 4/4, non-receipt 5/5, currency 8/9, discount/refund
+4/5, OCR noise 4/5, date format 7/9, ambiguous 4/7.
+
+**What failed.** Seven of the eight misses are the same behaviour: when a receipt is uncertain, the
+model fills in a plausible answer instead of flagging it.
+
+- `needs_review` was not raised for a missing date (`gbp_receipt_no_date`), a missing currency
+  (`no_currency_grocery`), a full refund (`full_refund_receipt`), conflicting totals
+  (`conflicting_totals`) and a total in two currencies (`total_in_two_currencies`).
+- Two dates were guessed instead of left `null`: an ambiguous `12/06/2025` became `2025-06-12`
+  (`date_slash_ambiguous`), and a Hijri-only date was converted to `2025-04-25`
+  (`date_hijri_only`), which breaks the "never invent a value" rule.
+- One OCR misread: a total with an `S` in place of a `5` came back as 1200 instead of 1250
+  (`ocr_letter_s_for_five`).
+
+So precision on `needs_review` is perfect (every flag was justified) but recall is 59%: the main
+weakness is under-flagging, not wrong values. With 50 cases, each case is 2 percentage points, so
+treat these as rough estimates.
 
 **Historical result (original 8-case set): 8/8 — run manually on 2026-08-15 — prompt extract-v2.**
 That run covered only the original 8 cases, not this set, and with so few cases it was a sanity
